@@ -1,51 +1,58 @@
-const redis = require('redis');
+import { createClient } from 'redis';
 
 class RedisClient {
-    constructor() {
-        this.client = redis.createClient();
-        
-        this.client.on('error', (err) => {
-            console.error('Redis error:', err);
-        });
-    }
+  constructor() {
+    this.client = createClient();
 
-    isAlive() {
-        return this.client.connected;
-    }
+    this.client.on('error', (err) => {
+      console.error(`Redis client not connected to the server: ${err.message}`);
+    });
 
-    async get(key) {
-        return new Promise((resolve, reject) => {
-            this.client.get(key, (err, reply) => {
-                if (err) {
-                    return reject(err);
-                }
-                resolve(reply);
-            });
-        });
-    }
+    this.client.on('connect', () => {
+      console.log('Redis client connected to the server');
+    });
+  }
 
-    async set(key, value, duration) {
-        return new Promise((resolve, reject) => {
-            this.client.setex(key, duration, value, (err) => {
-                if (err) {
-                    return reject(err);
-                }
-                resolve();
-            });
-        });
-    }
+  isAlive() {
+    return this.client.connected;
+  }
 
-    async del(key) {
-        return new Promise((resolve, reject) => {
-            this.client.del(key, (err, reply) => {
-                if (err) {
-                    return reject(err);
-                }
-                resolve(reply);
-            });
-        });
-    }
+  async get(key) {
+    return new Promise((resolve, reject) => {
+      this.client.get(key, (err, value) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(value);
+        }
+      });
+    });
+  }
+
+  async set(key, value, duration) {
+    return new Promise((resolve, reject) => {
+      this.client.set(key, value, 'EX', duration, (err, reply) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(reply);
+        }
+      });
+    });
+  }
+
+  async del(key) {
+    return new Promise((resolve, reject) => {
+      this.client.del(key, (err, reply) => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve(reply);
+        }
+      });
+    });
+  }
 }
 
 const redisClient = new RedisClient();
-module.exports = redisClient;
+export default redisClient;
