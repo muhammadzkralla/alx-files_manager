@@ -1,131 +1,169 @@
 import { v4 as uuidv4 } from 'uuid';
-import fs from 'fs';
-import path from 'path';
 import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
 
 const { ObjectId } = require('mongodb');
+const fs = require('fs');
+const Bull = require('bull');
 
 class FilesController {
   static async postUpload(req, res) {
-    const token = req.headers['x-token'];
-    if (!token) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    const fileQueue = new Bull('fileQueue');
+
+    const token = req.header('X-Token') || null;
+    if (!token) return res.status(401).send({ error: 'Unauthorized' });
+
+    const redisToken = await redisClient.get(`auth_${token}`);
+    if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
+
+    const user = await dbClient.db
+      .collection('users')
+      .findOne({ _id: ObjectId(redisToken) });
+    if (!user) return res.status(401).send({ error: 'Unauthorized' });
+
+    const fileName = req.body.name;
+    if (!fileName) return res.status(400).send({ error: 'Missing name' });
+
+    const fileType = req.body.type;
+    if (!fileType || !['folder', 'file', 'image'].includes(fileType)) return res.status(400).send({ error: 'Missing type' });
+
+    const fileData = req.body.data;
+    if (!fileData && ['file', 'image'].includes(fileType)) return res.status(400).send({ error: 'Missing data' });
+
+    const fileIsPublic = req.body.isPublic || false;
+    let idParent = req.body.parentId || 0;
+    idParent = idParent === '0' ? 0 : idParent;
+    if (idParent !== 0) {
+      const parentFile = await dbClient.db
+        .collection('files')
+        .findOne({ _id: ObjectId(idParent) });
+      if (!parentFile) return res.status(400).send({ error: 'Parent not found' });
+      if (!['folder'].includes(parentFile.type)) return res.status(400).send({ error: 'Parent is not a folder' });
     }
 
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const {
-      name, type, parentId = 0, isPublic = false, data,
-    } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ error: 'Missing name' });
-    }
-
-    if (!type || !['folder', 'file', 'image'].includes(type)) {
-      return res.status(400).json({ error: 'Missing type' });
-    }
-
-    if (type !== 'folder' && !data) {
-      return res.status(400).json({ error: 'Missing data' });
-    }
-
-    let parentFile = null;
-    if (parentId !== 0) {
-      parentFile = await dbClient.db.collection('files').findOne({ _id: parentId });
-      if (!parentFile) {
-        return res.status(400).json({ error: 'Parent not found' });
-      }
-      if (parentFile.type !== 'folder') {
-        return res.status(400).json({ error: 'Parent is not a folder' });
-      }
-    }
-
-    const newFile = {
-      userId,
-      name,
-      type,
-      isPublic,
-      parentId,
+    const dbFile = {
+      userId: user._id,
+      name: fileName,
+      type: fileType,
+      isPublic: fileIsPublic,
+      parentId: idParent,
     };
 
-    if (type === 'folder') {
-      const result = await dbClient.db.collection('files').insertOne(newFile);
-      return res.status(201).json({
-        id: result.insertedId,
-        ...newFile,
+    if (['folder'].includes(fileType)) {
+      await dbClient.db.collection('files').insertOne(dbFile);
+      return res.status(201).send({
+        id: dbFile._id,
+        userId: dbFile.userId,
+        name: dbFile.name,
+        type: dbFile.type,
+        isPublic: dbFile.isPublic,
+        parentId: dbFile.parentId,
       });
     }
 
-    const folderPath = process.env.FOLDER_PATH || '/tmp/files_manager';
-    const localPath = path.join(folderPath, uuidv4());
+    const pathDir = process.env.FOLDER_PATH || '/tmp/files_manager';
+    const uuidFile = uuidv4();
 
-    fs.mkdirSync(folderPath, { recursive: true });
+    const buff = Buffer.from(fileData, 'base64');
+    const pathFile = `${pathDir}/${uuidFile}`;
 
-    fs.writeFileSync(localPath, Buffer.from(data, 'base64'));
+    await fs.mkdir(pathDir, { recursive: true }, (error) => {
+      if (error) return res.status(400).send({ error: error.message });
+      return true;
+    });
 
-    newFile.localPath = localPath;
+    await fs.writeFile(pathFile, buff, (error) => {
+      if (error) return res.status(400).send({ error: error.message });
+      return true;
+    });
 
-    const result = await dbClient.db.collection('files').insertOne(newFile);
-    return res.status(201).json({
-      id: result.insertedId,
-      ...newFile,
+    dbFile.localPath = pathFile;
+    await dbClient.db.collection('files').insertOne(dbFile);
+
+    fileQueue.add({
+      userId: dbFile.userId,
+      fileId: dbFile._id,
+    });
+
+    return res.status(201).send({
+      id: dbFile._id,
+      userId: dbFile.userId,
+      name: dbFile.name,
+      type: dbFile.type,
+      isPublic: dbFile.isPublic,
+      parentId: dbFile.parentId,
     });
   }
 
   static async getShow(req, res) {
-    const token = req.header('X-Token');
-    if (!token) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const token = req.header('X-Token') || null;
+    if (!token) return res.status(401).send({ error: 'Unauthorized' });
 
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const redisToken = await redisClient.get(`auth_${token}`);
+    if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
 
-    const fileId = req.params.id;
-    if (!ObjectId.isValid(fileId)) {
-      return res.status(404).json({ error: 'Not found' });
-    }
+    const user = await dbClient.db
+      .collection('users')
+      .findOne({ _id: ObjectId(redisToken) });
+    if (!user) return res.status(401).send({ error: 'Unauthorized' });
 
-    const file = await dbClient.db.collection('files').findOne({ _id: ObjectId(fileId), userId: ObjectId(userId) });
-    if (!file) {
-      return res.status(404).json({ error: 'Not found' });
-    }
+    const idFile = req.params.id || '';
+    const fileDocument = await dbClient.db
+      .collection('files')
+      .findOne({ _id: ObjectId(idFile), userId: user._id });
+    if (!fileDocument) return res.status(404).send({ error: 'Not found' });
 
-    return res.status(200).json(file);
+    return res.send({
+      id: fileDocument._id,
+      userId: fileDocument.userId,
+      name: fileDocument.name,
+      type: fileDocument.type,
+      isPublic: fileDocument.isPublic,
+      parentId: fileDocument.parentId,
+    });
   }
 
   static async getIndex(req, res) {
-    const token = req.header('X-Token');
-    if (!token) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const token = req.header('X-Token') || null;
+    if (!token) return res.status(401).send({ error: 'Unauthorized' });
 
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
+    const redisToken = await redisClient.get(`auth_${token}`);
+    if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
 
-    const parentId = req.query.parentId || '0';
-    const page = parseInt(req.query.page, 10) || 0;
-    const pageSize = 20;
-    const skip = page * pageSize;
+    const user = await dbClient.db
+      .collection('users')
+      .findOne({ _id: ObjectId(redisToken) });
+    if (!user) return res.status(401).send({ error: 'Unauthorized' });
 
-    const files = await dbClient.db.collection('files')
-      .aggregate([
-        { $match: { userId: ObjectId(userId), parentId } },
-        { $skip: skip },
-        { $limit: pageSize },
-      ])
-      .toArray();
+    const parentId = req.query.parentId || 0;
+    const pagination = req.query.page || 0;
+    const aggregationMatch = { $and: [{ parentId }] };
 
-    return res.status(200).json(files);
+    let aggregateData = [
+      { $match: aggregationMatch },
+      { $skip: pagination * 20 },
+      { $limit: 20 },
+    ];
+    if (parentId === 0) aggregateData = [{ $skip: pagination * 20 }, { $limit: 20 }];
+
+    const files = await dbClient.db
+      .collection('files')
+      .aggregate(aggregateData);
+    const filesArray = [];
+
+    await files.forEach((item) => {
+      const fileItem = {
+        id: item._id,
+        userId: item.userId,
+        name: item.name,
+        type: item.type,
+        isPublic: item.isPublic,
+        parentId: item.parentId,
+      };
+      filesArray.push(fileItem);
+    });
+
+    return res.send(filesArray);
   }
 }
 
