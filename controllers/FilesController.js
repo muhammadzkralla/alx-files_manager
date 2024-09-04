@@ -165,6 +165,123 @@ class FilesController {
 
     return res.send(filesArray);
   }
+
+  static async putPublish(req, res) {
+    const token = req.header('X-Token') || null;
+    if (!token) return res.status(401).send({ error: 'Unauthorized' });
+
+    const redisToken = await RedisClient.get(`auth_${token}`);
+    if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
+
+    const user = await DBClient.db
+      .collection('users')
+      .findOne({ _id: ObjectId(redisToken) });
+    if (!user) return res.status(401).send({ error: 'Unauthorized' });
+
+    const idFile = req.params.id || '';
+
+    let fileDocument = await DBClient.db
+      .collection('files')
+      .findOne({ _id: ObjectId(idFile), userId: user._id });
+    if (!fileDocument) return res.status(404).send({ error: 'Not found' });
+
+    await DBClient.db
+      .collection('files')
+      .update({ _id: ObjectId(idFile) }, { $set: { isPublic: true } });
+    fileDocument = await DBClient.db
+      .collection('files')
+      .findOne({ _id: ObjectId(idFile), userId: user._id });
+
+    return res.send({
+      id: fileDocument._id,
+      userId: fileDocument.userId,
+      name: fileDocument.name,
+      type: fileDocument.type,
+      isPublic: fileDocument.isPublic,
+      parentId: fileDocument.parentId,
+    });
+  }
+
+  static async putUnpublish(req, res) {
+    const token = req.header('X-Token') || null;
+    if (!token) return res.status(401).send({ error: 'Unauthorized' });
+
+    const redisToken = await RedisClient.get(`auth_${token}`);
+    if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
+
+    const user = await DBClient.db
+      .collection('users')
+      .findOne({ _id: ObjectId(redisToken) });
+    if (!user) return res.status(401).send({ error: 'Unauthorized' });
+
+    const idFile = req.params.id || '';
+
+    let fileDocument = await DBClient.db
+      .collection('files')
+      .findOne({ _id: ObjectId(idFile), userId: user._id });
+    if (!fileDocument) return res.status(404).send({ error: 'Not found' });
+
+    await DBClient.db
+      .collection('files')
+      .update(
+        { _id: ObjectId(idFile), userId: user._id },
+        { $set: { isPublic: false } },
+      );
+    fileDocument = await DBClient.db
+      .collection('files')
+      .findOne({ _id: ObjectId(idFile), userId: user._id });
+
+    return res.send({
+      id: fileDocument._id,
+      userId: fileDocument.userId,
+      name: fileDocument.name,
+      type: fileDocument.type,
+      isPublic: fileDocument.isPublic,
+      parentId: fileDocument.parentId,
+    });
+  }
+
+  static async getFile(req, res) {
+    const idFile = req.params.id || '';
+    const size = req.query.size || 0;
+
+    const fileDocument = await DBClient.db
+      .collection('files')
+      .findOne({ _id: ObjectId(idFile) });
+    if (!fileDocument) return res.status(404).send({ error: 'Not found' });
+
+    const { isPublic } = fileDocument;
+    const { userId } = fileDocument;
+    const { type } = fileDocument;
+
+    let user = null;
+    let owner = false;
+
+    const token = req.header('X-Token') || null;
+    if (token) {
+      const redisToken = await RedisClient.get(`auth_${token}`);
+      if (redisToken) {
+        user = await DBClient.db
+          .collection('users')
+          .findOne({ _id: ObjectId(redisToken) });
+        if (user) owner = user._id.toString() === userId.toString();
+      }
+    }
+
+    if (!isPublic && !owner) return res.status(404).send({ error: 'Not found' });
+    if (['folder'].includes(type)) return res.status(400).send({ error: "A folder doesn't have content" });
+
+    const realPath = size === 0 ? fileDocument.localPath : `${fileDocument.localPath}_${size}`;
+
+    try {
+      const dataFile = fs.readFileSync(realPath);
+      const mimeType = mime.contentType(fileDocument.name);
+      res.setHeader('Content-Type', mimeType);
+      return res.send(dataFile);
+    } catch (error) {
+      return res.status(404).send({ error: 'Not found' });
+    }
+  }
 }
 
 export default FilesController;
