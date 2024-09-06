@@ -5,6 +5,7 @@ import redisClient from '../utils/redis';
 const { ObjectId } = require('mongodb');
 const fs = require('fs');
 const Bull = require('bull');
+const mime = require('mime-types');
 
 class FilesController {
   static async postUpload(req, res) {
@@ -67,12 +68,12 @@ class FilesController {
     const buff = Buffer.from(fileData, 'base64');
     const pathFile = `${pathDir}/${uuidFile}`;
 
-    await fs.mkdir(pathDir, { recursive: true }, (error) => {
+    fs.mkdir(pathDir, { recursive: true }, (error) => {
       if (error) return res.status(400).send({ error: error.message });
       return true;
     });
 
-    await fs.writeFile(pathFile, buff, (error) => {
+    fs.writeFile(pathFile, buff, (error) => {
       if (error) return res.status(400).send({ error: error.message });
       return true;
     });
@@ -170,25 +171,25 @@ class FilesController {
     const token = req.header('X-Token') || null;
     if (!token) return res.status(401).send({ error: 'Unauthorized' });
 
-    const redisToken = await RedisClient.get(`auth_${token}`);
+    const redisToken = await redisClient.get(`auth_${token}`);
     if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
 
-    const user = await DBClient.db
+    const user = await dbClient.db
       .collection('users')
       .findOne({ _id: ObjectId(redisToken) });
     if (!user) return res.status(401).send({ error: 'Unauthorized' });
 
     const idFile = req.params.id || '';
 
-    let fileDocument = await DBClient.db
+    let fileDocument = await dbClient.db
       .collection('files')
       .findOne({ _id: ObjectId(idFile), userId: user._id });
     if (!fileDocument) return res.status(404).send({ error: 'Not found' });
 
-    await DBClient.db
+    await dbClient.db
       .collection('files')
       .update({ _id: ObjectId(idFile) }, { $set: { isPublic: true } });
-    fileDocument = await DBClient.db
+    fileDocument = await dbClient.db
       .collection('files')
       .findOne({ _id: ObjectId(idFile), userId: user._id });
 
@@ -206,28 +207,28 @@ class FilesController {
     const token = req.header('X-Token') || null;
     if (!token) return res.status(401).send({ error: 'Unauthorized' });
 
-    const redisToken = await RedisClient.get(`auth_${token}`);
+    const redisToken = await redisClient.get(`auth_${token}`);
     if (!redisToken) return res.status(401).send({ error: 'Unauthorized' });
 
-    const user = await DBClient.db
+    const user = await dbClient.db
       .collection('users')
       .findOne({ _id: ObjectId(redisToken) });
     if (!user) return res.status(401).send({ error: 'Unauthorized' });
 
     const idFile = req.params.id || '';
 
-    let fileDocument = await DBClient.db
+    let fileDocument = await dbClient.db
       .collection('files')
       .findOne({ _id: ObjectId(idFile), userId: user._id });
     if (!fileDocument) return res.status(404).send({ error: 'Not found' });
 
-    await DBClient.db
+    await dbClient.db
       .collection('files')
       .update(
         { _id: ObjectId(idFile), userId: user._id },
         { $set: { isPublic: false } },
       );
-    fileDocument = await DBClient.db
+    fileDocument = await dbClient.db
       .collection('files')
       .findOne({ _id: ObjectId(idFile), userId: user._id });
 
@@ -245,7 +246,7 @@ class FilesController {
     const idFile = req.params.id || '';
     const size = req.query.size || 0;
 
-    const fileDocument = await DBClient.db
+    const fileDocument = await dbClient.db
       .collection('files')
       .findOne({ _id: ObjectId(idFile) });
     if (!fileDocument) return res.status(404).send({ error: 'Not found' });
@@ -259,9 +260,9 @@ class FilesController {
 
     const token = req.header('X-Token') || null;
     if (token) {
-      const redisToken = await RedisClient.get(`auth_${token}`);
+      const redisToken = await redisClient.get(`auth_${token}`);
       if (redisToken) {
-        user = await DBClient.db
+        user = await dbClient.db
           .collection('users')
           .findOne({ _id: ObjectId(redisToken) });
         if (user) owner = user._id.toString() === userId.toString();
